@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.next/
+out/
+build/
+
+# Env / secrets (never commit)
+.env
+.env.local
+.env.*.local
+*.env
+
+# Jenkins secrets (never commit)
+jenkins/secrets.env
+jenkins/*.env
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Prisma
+backend/prisma/*.db
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Docker
+*.tar
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+*.tfvars.json

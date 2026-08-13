@@ -1,0 +1,138 @@
+// Mobile Job Hunter — Jenkins declarative pipeline
+//
+// Stages: Checkout → Install → Unit tests → SonarQube → Dependency-Check →
+//         Build images → Trivy scan → Push to Docker Hub → Deploy (optional) → Smoke tests
+//
+// All secrets live in the Jenkins credentials store and are referenced by ID.
+// The actual values are recorded in jenkins/secrets.env (git-ignored); see
+// jenkins/README.md for how to create each credential from those values.
+
+pipeline {
+    agent any
+
+    parameters {
+        string(
+            name: 'GIT_REPO_URL',
+            defaultValue: 'https://github.com/<your-org>/mobile-job-hunter.git',
+            description: 'HTTPS URL of the GitHub repository (private repos use the PAT from secrets.env)'
+        )
+        booleanParam(
+            name: 'DEPLOY',
+            defaultValue: false,
+            description: 'Run the kubectl deploy + smoke-test stages (requires k8s/ manifests)'
+        )
+    }
+
+    environment {
+        DOCKER_REGISTRY = 'docker.io'
+        DOCKER_HUB_USER = '0304mugheer'
+        BACKEND_IMAGE   = "${DOCKER_REGISTRY}/${DOCKER_HUB_USER}/mjh-backend"
+        FRONTEND_IMAGE  = "${DOCKER_REGISTRY}/${DOCKER_HUB_USER}/mjh-frontend"
+        SONAR_HOST_URL  = 'http://<sonarqube-host>:9000' // set to your SonarQube host
+        APP_URL         = 'http://<ingress-or-loadbalancer-host>' // used by smoke tests
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    extensions: [],
+                    userRemoteConfigs: [[
+                        url: params.GIT_REPO_URL,
+                        // "Username with password" credential — password = GitHub PAT
+                        // (jenkins/secrets.env → GITHUB_TOKEN)
+                        credentialsId: 'github-credentials'
+                    ]]
+                ])
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                dir('backend')  { sh 'npm ci' }
+                dir('frontend') { sh 'npm ci' }
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                dir('backend') { sh 'npm test' }
+            }
+        }
+
+        stage('Static Code Analysis (SonarQube)') {
+            steps {
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                    sh '''
+                        sonar-scanner \
+                          -Dsonar.projectKey=mobile-job-hunter \
+                          -Dsonar.sources=backend/src,frontend/src \
+                          -Dsonar.host.url=${SONAR_HOST_URL} \
+                          -Dsonar.login=${SONAR_TOKEN}
+                    '''
+                }
+            }
+        }
+
+        stage('Dependency Scan (OWASP Dependency-Check)') {
+            steps {
+                sh 'dependency-check.sh --project "mobile-job-hunter" --scan backend frontend --format HTML --out dependency-check-report'
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                script {
+                    env.IMAGE_TAG = "${env.BUILD_NUMBER}-${env.GIT_COMMIT?.take(7) ?: 'local'}"
+                }
+                sh "docker build -t ${BACKEND_IMAGE}:${IMAGE_TAG} backend"
+                sh "docker build -t ${FRONTEND_IMAGE}:${IMAGE_TAG} frontend"
+            }
+        }
+
+        stage('Container Scan (Trivy)') {
+            steps {
+                sh "trivy image --severity HIGH,CRITICAL --exit-code 1 ${BACKEND_IMAGE}:${IMAGE_TAG}"
+                sh "trivy image --severity HIGH,CRITICAL --exit-code 1 ${FRONTEND_IMAGE}:${IMAGE_TAG}"
+            }
+        }
+
+        stage('Push Images (Docker Hub)') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'docker-hub-creds',
+                        usernameVariable: 'DOCKER_USERNAME',
+                        passwordVariable: 'DOCKER_PASSWORD'
+                    )
+                ]) {
+                    sh 'echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin'
+                    sh "docker push ${BACKEND_IMAGE}:${IMAGE_TAG}"
+                    sh "docker push ${FRONTEND_IMAGE}:${IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            when { expression { params.DEPLOY } }
+            steps {
+                sh 'kubectl apply -f k8s/' // k8s/ manifests are added in a later step
+            }
+        }
+
+        stage('Smoke Tests') {
+            when { expression { params.DEPLOY } }
+            steps {
+                sh "curl -fsS ${APP_URL}/health"
+                sh "curl -fsS ${APP_URL}/api/v1/jobs"
+            }
+        }
+    }
+
+    post {
+        success { echo 'Pipeline succeeded.' }
+        failure { echo 'Pipeline failed.' }
+    }
+}

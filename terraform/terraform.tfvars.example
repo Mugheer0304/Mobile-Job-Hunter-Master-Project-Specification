@@ -1,0 +1,35 @@
+# Copy to terraform.tfvars and fill in real values.
+# terraform.tfvars is git-ignored — never commit secrets here.
+
+aws_region   = "us-east-1"
+environment  = "dev"
+project_name = "mjh"
+
+# VPC
+vpc_cidr            = "10.0.0.0/16"
+availability_zones  = ["us-east-1a", "us-east-1b"]
+public_subnets      = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnets     = ["10.0.3.0/24", "10.0.4.0/24"]
+
+# RDS
+db_identifier        = "mjh-postgres"
+db_name              = "mjh"
+db_username          = "mjh"
+db_password          = "CHANGE_ME"        # use a strong password
+db_instance_class    = "db.t3.micro"
+db_allocated_storage = 20
+db_multi_az          = false
+
+# EKS
+cluster_name        = "mjh-cluster"
+cluster_version     = "1.30"              # use a currently-supported EKS version
+node_instance_types = ["t3.medium"]
+node_desired_size   = 2
+node_min_size       = 1
+node_max_size       = 4
+
+# Jenkins
+jenkins_instance_type      = "t2.large"
+jenkins_key_name           = ""           # your EC2 key pair name (for SSH)
+ssh_cidr_blocks            = ["0.0.0.0/0"] # TODO: restrict to your IP
+jenkins_public_cidr_blocks = ["0.0.0.0/0"] # TODO: restrict 8080/50000 to your IP
