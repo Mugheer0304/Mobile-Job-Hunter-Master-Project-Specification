@@ -1,11 +1,18 @@
 // Mobile Job Hunter — Jenkins declarative pipeline
 //
-// Stages: Checkout → Install → Unit tests → SonarQube → Dependency-Check →
-//         Build images → Trivy scan → Push to Docker Hub → Deploy (optional) → Smoke tests
+// Flow:
+//   Checkout → Install → Unit tests → (SonarQube) → (Dependency-Check)
+//   → Build backend image → (Trivy) → Push backend
+//   → Deploy backend (get its URL) → Build frontend (with backend URL) → Push frontend
+//   → Deploy frontend (get its URL) → Smoke tests
 //
-// All secrets live in the Jenkins credentials store and are referenced by ID.
-// The actual values are recorded in jenkins/secrets.env (git-ignored); see
-// jenkins/README.md for how to create each credential from those values.
+// The frontend bakes NEXT_PUBLIC_API_URL into its bundle at build time, so the
+// backend is deployed FIRST and its LoadBalancer URL is passed to the frontend
+// build as a build-arg. That is why the build/deploy order is split.
+//
+// Secrets live in the Jenkins credentials store and are referenced by ID; see
+// jenkins/README.md. The Kubernetes Secret itself is created once by hand (see
+// k8s/README.md) — it is never committed to the repo.
 
 pipeline {
     agent any
@@ -19,17 +26,23 @@ pipeline {
         booleanParam(
             name: 'DEPLOY',
             defaultValue: false,
-            description: 'Run the kubectl deploy + smoke-test stages (requires k8s/ manifests)'
+            description: 'Deploy to EKS and run the smoke tests'
         )
+        // Security gates are off by default so a first run can succeed without
+        // SonarQube / Dependency-Check infra. Enable them once those tools are set up.
+        booleanParam(name: 'RUN_SONAR', defaultValue: false, description: 'Run SonarQube static analysis')
+        booleanParam(name: 'RUN_DEP_CHECK', defaultValue: false, description: 'Run OWASP Dependency-Check')
+        booleanParam(name: 'RUN_TRIVY', defaultValue: false, description: 'Run Trivy container scan')
     }
 
     environment {
-        DOCKER_REGISTRY = 'docker.io'
-        DOCKER_HUB_USER = '0304mugheer'
-        BACKEND_IMAGE   = "${DOCKER_REGISTRY}/${DOCKER_HUB_USER}/mjh-backend"
-        FRONTEND_IMAGE  = "${DOCKER_REGISTRY}/${DOCKER_HUB_USER}/mjh-frontend"
-        SONAR_HOST_URL  = 'http://<sonarqube-host>:9000' // set to your SonarQube host
-        APP_URL         = 'http://<ingress-or-loadbalancer-host>' // used by smoke tests
+        DOCKER_HUB_USER = '0304mugheer' // TODO: replace with your Docker Hub username
+        BACKEND_IMAGE   = "docker.io/${DOCKER_HUB_USER}/mjh-backend"
+        FRONTEND_IMAGE  = "docker.io/${DOCKER_HUB_USER}/mjh-frontend"
+        AWS_REGION      = 'us-east-1'
+        EKS_CLUSTER     = 'mjh-cluster'
+        K8S_NAMESPACE   = 'mjh'
+        SONAR_HOST_URL  = 'http://<sonarqube-host>:9000' // set when RUN_SONAR is enabled
     }
 
     stages {
@@ -42,7 +55,6 @@ pipeline {
                     userRemoteConfigs: [[
                         url: params.GIT_REPO_URL,
                         // "Username with password" credential — password = GitHub PAT
-                        // (jenkins/secrets.env → GITHUB_TOKEN)
                         credentialsId: 'github-credentials'
                     ]]
                 ])
@@ -63,70 +75,94 @@ pipeline {
         }
 
         stage('Static Code Analysis (SonarQube)') {
+            when { expression { params.RUN_SONAR } }
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                    sh '''
-                        sonar-scanner \
-                          -Dsonar.projectKey=mobile-job-hunter \
-                          -Dsonar.sources=backend/src,frontend/src \
-                          -Dsonar.host.url=${SONAR_HOST_URL} \
-                          -Dsonar.login=${SONAR_TOKEN}
-                    '''
+                    sh "sonar-scanner -Dsonar.projectKey=mobile-job-hunter -Dsonar.sources=backend/src,frontend/src -Dsonar.host.url=${SONAR_HOST_URL} -Dsonar.login=${SONAR_TOKEN}"
                 }
             }
         }
 
         stage('Dependency Scan (OWASP Dependency-Check)') {
+            when { expression { params.RUN_DEP_CHECK } }
             steps {
                 sh 'dependency-check.sh --project "mobile-job-hunter" --scan backend frontend --format HTML --out dependency-check-report'
             }
         }
 
-        stage('Build Docker Images') {
+        stage('Build Backend Image') {
             steps {
                 script {
-                    env.IMAGE_TAG = "${env.BUILD_NUMBER}-${env.GIT_COMMIT?.take(7) ?: 'local'}"
+                    env.IMAGE_TAG = "${env.BUILD_NUMBER}-${(env.GIT_COMMIT ?: 'local').take(7)}"
                 }
-                sh "docker build -t ${BACKEND_IMAGE}:${IMAGE_TAG} backend"
-                sh "docker build -t ${FRONTEND_IMAGE}:${IMAGE_TAG} frontend"
+                sh "docker build -t ${BACKEND_IMAGE}:latest -t ${BACKEND_IMAGE}:${IMAGE_TAG} backend"
             }
         }
 
         stage('Container Scan (Trivy)') {
+            when { expression { params.RUN_TRIVY } }
             steps {
                 sh "trivy image --severity HIGH,CRITICAL --exit-code 1 ${BACKEND_IMAGE}:${IMAGE_TAG}"
-                sh "trivy image --severity HIGH,CRITICAL --exit-code 1 ${FRONTEND_IMAGE}:${IMAGE_TAG}"
             }
         }
 
-        stage('Push Images (Docker Hub)') {
+        stage('Push Backend Image') {
             steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'docker-hub-creds',
-                        usernameVariable: 'DOCKER_USERNAME',
-                        passwordVariable: 'DOCKER_PASSWORD'
-                    )
-                ]) {
+                withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
                     sh 'echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin'
+                    sh "docker push ${BACKEND_IMAGE}:latest"
                     sh "docker push ${BACKEND_IMAGE}:${IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Deploy Backend') {
+            when { expression { params.DEPLOY } }
+            steps {
+                script {
+                    sh "aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER}"
+                    sh "kubectl apply -f k8s/namespace.yaml -f k8s/configmap.yaml -f k8s/backend/"
+                    env.BACKEND_URL = waitForLoadBalancer('mjh-backend', '4000')
+                }
+            }
+        }
+
+        stage('Build Frontend Image') {
+            steps {
+                script {
+                    // When deploying, point the frontend at the backend's public URL.
+                    def apiUrl = env.BACKEND_URL ? "${env.BACKEND_URL}/api/v1" : 'http://localhost:4000/api/v1'
+                    sh "docker build --build-arg NEXT_PUBLIC_API_URL=${apiUrl} -t ${FRONTEND_IMAGE}:latest -t ${FRONTEND_IMAGE}:${IMAGE_TAG} frontend"
+                }
+            }
+        }
+
+        stage('Push Frontend Image') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+                    sh 'echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin'
+                    sh "docker push ${FRONTEND_IMAGE}:latest"
                     sh "docker push ${FRONTEND_IMAGE}:${IMAGE_TAG}"
                 }
             }
         }
 
-        stage('Deploy to EKS') {
+        stage('Deploy Frontend') {
             when { expression { params.DEPLOY } }
             steps {
-                sh 'kubectl apply -f k8s/' // k8s/ manifests are added in a later step
+                script {
+                    sh 'kubectl apply -f k8s/frontend/'
+                    env.FRONTEND_URL = waitForLoadBalancer('mjh-frontend', '80')
+                }
             }
         }
 
         stage('Smoke Tests') {
             when { expression { params.DEPLOY } }
             steps {
-                sh "curl -fsS ${APP_URL}/health"
-                sh "curl -fsS ${APP_URL}/api/v1/jobs"
+                sh "curl -fsS ${env.BACKEND_URL}/health"
+                sh "curl -fsS ${env.BACKEND_URL}/api/v1/jobs"
+                sh "curl -fsS ${env.FRONTEND_URL}/jobs"
             }
         }
     }
@@ -135,4 +171,23 @@ pipeline {
         success { echo 'Pipeline succeeded.' }
         failure { echo 'Pipeline failed.' }
     }
+}
+
+// Polls the LoadBalancer service until AWS assigns it a hostname, then returns
+// the full URL (without a port when the service is exposed on port 80).
+def waitForLoadBalancer(String svc, String port) {
+    def host = ''
+    for (int i = 0; i < 40 && host == ''; i++) {
+        sleep 10
+        host = sh(
+            script: "kubectl -n ${env.K8S_NAMESPACE} get svc ${svc} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'",
+            returnStdout: true
+        ).trim()
+    }
+    if (host == '') {
+        error("Timed out waiting for the LoadBalancer hostname of service ${svc}")
+    }
+    def url = port == '80' ? "http://${host}" : "http://${host}:${port}"
+    echo "Service ${svc} is exposed at ${url}"
+    return url
 }

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mjh-frontend
+  namespace: mjh
+  labels:
+    app: mjh-frontend
+spec:
+  type: LoadBalancer
+  selector:
+    app: mjh-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+      protocol: TCP

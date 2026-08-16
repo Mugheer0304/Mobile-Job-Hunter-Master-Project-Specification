@@ -72,6 +72,7 @@ model User {
   createdCompanies   Company[]         @relation("CompanyCreator")
   comments           Comment[]
   postLikes          PostLike[]
+  postedJobs         Job[]             @relation("JobPoster")
 
   @@map("users")
 }
@@ -178,7 +179,7 @@ model Job {
   updatedAt      DateTime       @updatedAt
 
   company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  postedBy     User          @relation(fields: [postedById], references: [id])
+  postedBy     User          @relation("JobPoster", fields: [postedById], references: [id])
   applications Application[]
 
   @@index([title])

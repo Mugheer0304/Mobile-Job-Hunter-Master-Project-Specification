@@ -13,10 +13,13 @@ export const app = express();
 // Security headers
 app.use(helmet());
 
-// Strict CORS (no wildcard in production)
+// CORS: allow a comma-separated origin list in production. A literal `*` is
+// treated as "reflect the request origin" so the deployed frontend (whose
+// origin is not known until its LoadBalancer is provisioned) can call the API.
+const corsOrigins = env.CORS_ORIGIN.split(',').map((s) => s.trim());
 app.use(
   cors({
-    origin: isProd ? env.CORS_ORIGIN.split(',').map((s) => s.trim()) : true,
+    origin: !isProd || corsOrigins.includes('*') ? true : corsOrigins,
     credentials: true,
   }),
 );

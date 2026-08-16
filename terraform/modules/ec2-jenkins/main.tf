@@ -129,6 +129,10 @@ resource "aws_instance" "jenkins" {
     # Java 17 (required by Jenkins)
     apt-get install -y openjdk-17-jdk-headless fontconfig
 
+    # Node.js 20 (used by the Jenkins pipeline's npm ci / npm test stages)
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+
     # Jenkins (LTS)
     curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | gpg --dearmor -o /usr/share/keyrings/jenkins-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.gpg] https://pkg.jenkins.io/debian-stable binary/" > /etc/apt/sources.list.d/jenkins.list

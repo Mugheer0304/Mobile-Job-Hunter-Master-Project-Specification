@@ -4,8 +4,10 @@ import { sendResponse } from '../utils/sendResponse';
 import * as notificationService from '../services/notification.service';
 
 export const list = asyncHandler(async (req: Request, res: Response) => {
+  const { page, limit } = req.query as unknown as { page: number; limit: number };
   const result = await notificationService.listNotifications(req.user!.id, {
-    ...(req.query as never),
+    page,
+    limit,
     unreadOnly: req.query.unreadOnly === 'true',
   });
   return sendResponse(res, 200, result);

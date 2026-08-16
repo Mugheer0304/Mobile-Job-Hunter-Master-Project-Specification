@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mjh-frontend
+  namespace: mjh
+  labels:
+    app: mjh-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mjh-frontend
+  template:
+    metadata:
+      labels:
+        app: mjh-frontend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: frontend
+          # Replace "0304mugheer" with your Docker Hub username if different.
+          image: docker.io/0304mugheer/mjh-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+          readinessProbe:
+            httpGet:
+              path: /jobs
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /jobs
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
