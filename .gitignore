@@ -17,6 +17,9 @@ build/
 jenkins/secrets.env
 jenkins/*.env
 
+# Local credentials (never commit)
+login-git-docker
+
 # Logs
 *.log
 logs/

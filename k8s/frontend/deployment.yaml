@@ -15,8 +15,6 @@ spec:
       labels:
         app: mjh-frontend
     spec:
-      securityContext:
-        runAsNonRoot: true
       containers:
         - name: frontend
           # Replace "0304mugheer" with your Docker Hub username if different.

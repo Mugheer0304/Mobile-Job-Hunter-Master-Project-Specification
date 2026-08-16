@@ -101,7 +101,7 @@ variable "cluster_version" {
 variable "node_instance_types" {
   description = "Instance types for the managed node group"
   type        = list(string)
-  default     = ["t3.medium"]
+  default     = ["t3.small"]
 }
 
 variable "node_desired_size" {
@@ -126,7 +126,7 @@ variable "node_max_size" {
 variable "jenkins_instance_type" {
   description = "EC2 instance type for the Jenkins server"
   type        = string
-  default     = "t2.large"
+  default     = "t3.small"
 }
 
 variable "jenkins_key_name" {

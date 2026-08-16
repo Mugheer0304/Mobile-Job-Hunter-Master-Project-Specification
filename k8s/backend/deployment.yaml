@@ -15,8 +15,20 @@ spec:
       labels:
         app: mjh-backend
     spec:
-      securityContext:
-        runAsNonRoot: true
+      initContainers:
+        - name: migrate
+          # Replace "0304mugheer" with your Docker Hub username if different.
+          image: docker.io/0304mugheer/mjh-backend:latest
+          imagePullPolicy: Always
+          command: ["sh", "-c", "npx prisma migrate deploy"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: mjh-backend-secret
+                  key: DATABASE_URL
+          securityContext:
+            runAsUser: 0
       containers:
         - name: backend
           # Replace "0304mugheer" with your Docker Hub username if different.

@@ -67,9 +67,9 @@ variable "vpc_cidr_block" {
 }
 
 variable "backup_retention_period" {
-  description = "Days to retain automated backups"
+  description = "Days to retain automated backups (0 = disabled; free-tier accounts require 0)"
   type        = number
-  default     = 7
+  default     = 0
 }
 
 variable "deletion_protection" {

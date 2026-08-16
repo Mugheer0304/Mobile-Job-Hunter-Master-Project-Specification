@@ -420,7 +420,7 @@ eksctl create cluster \
   --name mjh-cluster \
   --region us-east-1 \
   --nodegroup-name mjh-ng \
-  --node-type t3.medium \
+  --node-type t3.small \  # free-tier eligible
   --nodes 2 --nodes-min 1 --nodes-max 4
 ```
 
@@ -433,28 +433,26 @@ kubectl get nodes
 
 ### Step 3 — Create the Kubernetes objects
 
-Create a `k8s/` directory with (roadmap item — see §18):
+The manifests are included in this repo under [`k8s/`](k8s/README.md) — see that
+directory's README for the full deploy guide.
 
 | File | Purpose |
 |------|---------|
-| `namespaces/namespace.yaml` | `mjh` namespace |
-| `configmaps/` | non-secret env (API URL, env names) |
-| `secrets/` | DB creds, JWT secret — **reference AWS Secrets Manager / External Secrets, never commit** |
-| `backend/deployment.yaml` + `service.yaml` | backend pods + ClusterIP |
-| `backend/hpa.yaml` | scale backend on CPU/memory |
-| `frontend/deployment.yaml` + `service.yaml` | frontend pods + service |
-| `ingress/ingress.yaml` | ALB ingress, routes + TLS |
-| `database/` | use **Amazon RDS** (managed Postgres) instead of in-cluster DB |
+| `namespace.yaml` | `mjh` namespace |
+| `configmap.yaml` | non-secret env (CORS, port, env) |
+| `backend/deployment.yaml` + `service.yaml` | backend pods + public LoadBalancer (port 4000) |
+| `frontend/deployment.yaml` + `service.yaml` | frontend pods + public LoadBalancer (port 80) |
+
+> Secrets (`DATABASE_URL`, `JWT_SECRET`) are created once with
+> `kubectl create secret generic mjh-backend-secret -n mjh ...` — never
+> committed. See `k8s/README.md` §0.2.
 
 ### Step 4 — Deploy
 
 ```bash
-kubectl apply -f k8s/namespaces/
-kubectl apply -f k8s/configmaps/
-kubectl apply -f k8s/secrets/      # from External Secrets, not raw manifests
+kubectl apply -f k8s/namespace.yaml -f k8s/configmap.yaml
 kubectl apply -f k8s/backend/
 kubectl apply -f k8s/frontend/
-kubectl apply -f k8s/ingress/
 ```
 
 > The Jenkins `Deploy to EKS` stage runs `kubectl apply -f k8s/` when `DEPLOY=true`.
@@ -643,8 +641,8 @@ Health: `GET /health`, `GET /ready`.
 1. ✅ Application code (frontend + backend + database) + Dockerfiles
 2. ✅ Jenkins pipeline (`jenkins/Jenkinsfile`) + credentials wiring
 3. ⬜ Provision Jenkins EC2 + install tools/plugins/credentials (follow §11)
-4. ⬜ Kubernetes manifests (`k8s/`) — deployments, services, HPA, ingress
-5. ⬜ EKS cluster + RDS provisioning
+4. ✅ Kubernetes manifests (`k8s/`) — deployments + LoadBalancer services
+5. ✅ EKS cluster + RDS provisioning
 6. ✅ Terraform modules for VPC/RDS/EKS/Jenkins EC2 (`terraform/`)
 7. ⬜ Route 53 + ACM + AWS Load Balancer Controller (domain + HTTPS)
 8. ⬜ Prometheus/Grafana + EFK observability

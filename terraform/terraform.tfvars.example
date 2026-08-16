@@ -23,13 +23,13 @@ db_multi_az          = false
 # EKS
 cluster_name        = "mjh-cluster"
 cluster_version     = "1.30"              # use a currently-supported EKS version
-node_instance_types = ["t3.medium"]
+node_instance_types = ["t3.small"]
 node_desired_size   = 2
 node_min_size       = 1
 node_max_size       = 4
 
 # Jenkins
-jenkins_instance_type      = "t2.large"
+jenkins_instance_type      = "t3.small"
 jenkins_key_name           = ""           # your EC2 key pair name (for SSH)
 ssh_cidr_blocks            = ["0.0.0.0/0"] # TODO: restrict to your IP
 jenkins_public_cidr_blocks = ["0.0.0.0/0"] # TODO: restrict 8080/50000 to your IP

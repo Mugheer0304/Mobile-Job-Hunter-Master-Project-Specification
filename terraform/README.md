@@ -72,8 +72,8 @@ terraform init \
 | `db_instance_class`         | `db.t3.micro`| |
 | `db_multi_az`               | `false`      | enable for production |
 | `cluster_name` / `cluster_version` | `mjh-cluster` / `1.30` | use a supported EKS version |
-| `node_instance_types`       | `["t3.medium"]` | |
-| `jenkins_instance_type`     | `t2.large`   | |
+| `node_instance_types`       | `["t3.small"]` | |
+| `jenkins_instance_type`     | `t3.small`   | |
 | `jenkins_key_name`          | `""`         | EC2 key pair for SSH |
 | `ssh_cidr_blocks` / `jenkins_public_cidr_blocks` | `0.0.0.0/0` | **restrict to your IP** |
 
