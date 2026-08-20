@@ -1,0 +1,46 @@
+# Helm values for prometheus-community/kube-prometheus-stack
+# Sized for the free-tier MJH cluster (2x t3.small). Tune up for production.
+grafana:
+  adminPassword: prom-operator # CHANGE ME
+  service:
+    type: ClusterIP
+  persistence:
+    enabled: false # use a PVC + StorageClass in production
+  ingress:
+    enabled: false # enable + point at your ALB once the domain is wired up
+
+prometheus:
+  prometheusSpec:
+    retention: 3d
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    storageSpec:
+      emptyDir: {} # ephemeral; use a PVC in production
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+# The default node-exporter/kube-state-metrics are small; cap them anyway.
+nodeExporter:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+
+kubeStateMetrics:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi

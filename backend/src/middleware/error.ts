@@ -18,7 +18,7 @@ export function notFound(req: Request, _res: Response, next: NextFunction) {
 export function errorHandler(err: HttpError, _req: Request, res: Response, _next: NextFunction) {
   let statusCode = err.statusCode ?? 500;
   let message = err.message || 'Internal server error';
-  let details = err.details;
+  const details = err.details;
 
   // Prisma known request errors -> 4xx
   if (err instanceof Prisma.PrismaClientKnownRequestError) {

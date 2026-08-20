@@ -110,6 +110,10 @@ jobs:
         working-directory: backend
         run: npm test
 
+      - name: Lint (backend)
+        working-directory: backend
+        run: npm run lint
+
       - name: Typecheck (backend)
         working-directory: backend
         run: npm run typecheck

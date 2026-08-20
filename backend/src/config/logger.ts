@@ -1,4 +1,4 @@
-import { env, isProd, isTest } from './env';
+import { isProd, isTest } from './env';
 
 type Level = 'debug' | 'info' | 'warn' | 'error';
 

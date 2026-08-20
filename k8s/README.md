@@ -167,7 +167,115 @@ so the simplest path right now is to just register accounts through the UI.
 ## 5. Cleanup
 
 ```bash
+kubectl delete -f k8s/ingress.yaml
 kubectl delete -f k8s/frontend/ -f k8s/backend/ -f k8s/configmap.yaml -f k8s/namespace.yaml
 ```
 
 Deleting the `LoadBalancer` services also deletes the ELBs (and their cost).
+
+---
+
+## 6. Custom domain + HTTPS (Route 53 + ACM + AWS Load Balancer Controller)
+
+By default the app is exposed via public LoadBalancer URLs over plain HTTP.
+This section replaces those URLs with your own domain served over HTTPS,
+using an Application Load Balancer (ALB) via the AWS Load Balancer
+Controller. The manifests are ready in [`ingress.yaml`](ingress.yaml).
+
+### 6.1 Install the AWS Load Balancer Controller
+
+```bash
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  -n kube-system \
+  --set clusterName=mjh-cluster \
+  --set serviceAccount.create=true \
+  --set serviceAccount.name=aws-load-balancer-controller
+```
+
+> The controller's ServiceAccount needs `iam.amazonaws.com` IRSA (OIDC
+> provider + IAM role) — the `eks-cluster` Terraform module already creates
+> the OIDC provider. See the AWS docs for the IAM policy
+> `AWSLoadBalancerControllerIAMPolicy`.
+
+### 6.2 Request an ACM certificate
+
+```bash
+# Replace with your domain; run once per domain/subdomain you route.
+aws acm request-certificate \
+  --domain-name mjh.example \
+  --validation-method DNS \
+  --region us-east-1   # must match the ALB region
+
+aws acm request-certificate \
+  --domain-name '*.mjh.example' \
+  --validation-method DNS \
+  --region us-east-1
+```
+
+Validate the certificate by adding the DNS records ACM returns (CNAME
+validation) to Route 53, then wait for `Issued`:
+
+```bash
+aws acm list-certificates --region us-east-1 --includes keyTypes=RSA_2048
+aws acm describe-certificate --certificate-arn <ACM_CERTIFICATE_ARN> --region us-east-1
+```
+
+### 6.3 Configure the Ingress
+
+1. Open [`ingress.yaml`](ingress.yaml) and replace:
+   - `<ACM_CERTIFICATE_ARN>` with your certificate ARN, and
+   - the two `host:` values (`api.mjh.example`, `mjh.example`) with your domain.
+2. Apply it:
+
+   ```bash
+   kubectl apply -f k8s/ingress.yaml
+   kubectl -n mjh get ingress mjh-ingress -w   # wait for the ADDRESS to appear
+   ```
+
+### 6.4 Point Route 53 at the ALB
+
+Once the Ingress has an address, create alias A records in your hosted zone
+pointing each host at the ALB:
+
+```bash
+ALB_DNS=$(kubectl -n mjh get ingress mjh-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "ALB DNS: $ALB_DNS"
+
+# In the Route 53 console: create A record (alias) for
+#   mjh.example      -> $ALB_DNS
+#   api.mjh.example  -> $ALB_DNS
+```
+
+### 6.5 Point the app at the new API URL
+
+The frontend reads `NEXT_PUBLIC_API_URL` at **build time**. Rebuild/push the
+frontend image with the API set to your HTTPS domain before deploying:
+
+```bash
+docker build \
+  --build-arg NEXT_PUBLIC_API_URL=https://api.mjh.example/api/v1 \
+  -t 0304mugheer/mjh-frontend:latest frontend
+docker push 0304mugheer/mjh-frontend:latest
+kubectl -n mjh rollout restart deploy/mjh-frontend
+```
+
+### 6.6 Verify
+
+```bash
+curl -I https://mjh.example            # 200, TLS handshake ok
+curl https://api.mjh.example/health    # {"status":"ok",...}
+```
+
+### 6.7 (Optional) Stop paying for the old LoadBalancers
+
+Once the Ingress is serving traffic, the `mjh-backend` and `mjh-frontend`
+Services no longer need to be `type: LoadBalancer`. Switch them to `ClusterIP`
+(ALB `target-type: ip` routes straight to pods):
+
+```bash
+kubectl -n mjh patch svc mjh-backend  -p '{"spec":{"type":"ClusterIP"}}'
+kubectl -n mjh patch svc mjh-frontend -p '{"spec":{"type":"ClusterIP"}}'
+```

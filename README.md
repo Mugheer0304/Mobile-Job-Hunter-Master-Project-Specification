@@ -264,8 +264,14 @@ npm run lint
 npm run build
 ```
 
-Current test coverage: `tests/unit/{jwt,password,validators}` +
-`tests/integration/health`. (Service/controller integration tests are a roadmap item.)
+Current test coverage (126 tests across 15 suites):
+
+- `tests/unit/` — `jwt`, `password`, `validators`, plus service-level unit tests
+  for every service (`auth`, `user`, `job`, `application`, `connection`, `post`,
+  `company`, `message`, `notification`, `admin`) with a mocked Prisma client.
+- `tests/integration/` — `health`, and full HTTP-stack flows (`api.flow`):
+  register → login → `/auth/me`, job listing/creation, profile updates, and
+  auth guards, all with a mocked Prisma client.
 
 ---
 
@@ -465,6 +471,8 @@ directory's README for the full deploy guide.
 | `configmap.yaml` | non-secret env (CORS, port, env) |
 | `backend/deployment.yaml` + `service.yaml` | backend pods + public LoadBalancer (port 4000) |
 | `frontend/deployment.yaml` + `service.yaml` | frontend pods + public LoadBalancer (port 80) |
+| `ingress.yaml` | ALB Ingress with ACM cert + host-based routing (domain + HTTPS, see §13) |
+| `monitoring/` | Prometheus/Grafana + EFK values and setup guide (see §14) |
 
 > Secrets (`DATABASE_URL`, `JWT_SECRET`) are created once with
 > `kubectl create secret generic mjh-backend-secret -n mjh ...` — never
@@ -485,12 +493,20 @@ kubectl apply -f k8s/frontend/
 
 ## 13. Domain, DNS & SSL
 
+The Ingress manifest ([`k8s/ingress.yaml`](k8s/ingress.yaml)) is ready to use
+— it routes `api.<domain>` → backend and `<domain>` → frontend over HTTPS via
+an ALB, with an HTTP→HTTPS redirect. The step-by-step walkthrough (install the
+AWS Load Balancer Controller, request the ACM certificate, apply the Ingress,
+and create the Route 53 alias records) is in [`k8s/README.md`](k8s/README.md) §6.
+
+In short:
+
 1. Register/point your domain in **Route 53** (create a Hosted Zone).
 2. Request a public certificate in **AWS Certificate Manager (ACM)** for the domain.
 3. Install the **AWS Load Balancer Controller** in EKS (via Helm).
-4. Create an `Ingress` annotated for an Application Load Balancer (ALB), attaching the ACM cert.
+4. Apply `k8s/ingress.yaml` with your ACM cert ARN and hosts.
 5. In Route 53, add an **A record (alias)** pointing the domain to the ALB.
-6. Enforce HTTP → HTTPS redirect at the ALB/Ingress level.
+6. HTTP → HTTPS redirect is enforced by the Ingress `ssl-redirect` annotation.
 
 ---
 
@@ -504,11 +520,13 @@ kubectl apply -f k8s/frontend/
 | Uptime checks | Route 53 health checks |
 | Key dashboards | Pod CPU/memory, request latency, error rate, DB connections, HPA events |
 
-Install the monitoring stack:
+Helm values and the full walkthrough live in
+[`k8s/monitoring/`](k8s/monitoring/README.md) — install with:
 
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace
+helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace \
+  -f k8s/monitoring/kube-prometheus-stack-values.yaml
 ```
 
 ---
@@ -663,14 +681,14 @@ Health: `GET /health`, `GET /ready`.
 
 1. ✅ Application code (frontend + backend + database) + Dockerfiles
 2. ✅ CI/CD pipelines — Jenkins (`jenkins/Jenkinsfile`) and GitHub Actions (`.github/workflows/ci-cd.yml`) + credentials wiring
-3. ⬜ Provision Jenkins EC2 + install tools/plugins/credentials (follow §11)
+3. ⬜ Provision Jenkins EC2 + install tools/plugins/credentials — the `ec2-jenkins` Terraform module fully bootstraps it; run `terraform apply` and follow §11
 4. ✅ Kubernetes manifests (`k8s/`) — deployments + LoadBalancer services
-5. ✅ EKS cluster + RDS provisioning
+5. ✅ EKS cluster + RDS provisioning (Terraform modules; apply with `terraform apply`)
 6. ✅ Terraform modules for VPC/RDS/EKS/Jenkins EC2 (`terraform/`)
-7. ⬜ Route 53 + ACM + AWS Load Balancer Controller (domain + HTTPS)
-8. ⬜ Prometheus/Grafana + EFK observability
-9. ⬜ Run the full pipeline end-to-end; fix SonarQube/Trivy/Dependency-Check findings
-10. ⬜ Expand backend test coverage (service/controller integration tests)
+7. ✅ Route 53 + ACM + AWS Load Balancer Controller — `k8s/ingress.yaml` + full walkthrough in `k8s/README.md` §6 (apply after `terraform apply`)
+8. ✅ Prometheus/Grafana + EFK observability — manifests + values + guide in `k8s/monitoring/` (install after the cluster is up)
+9. ⬜ Run the full pipeline end-to-end; fix SonarQube/Trivy/Dependency-Check findings (needs a live Jenkins + AWS)
+10. ✅ Expand backend test coverage — 126 tests across 15 suites (service unit tests + HTTP-stack integration tests)
 
 ---
 

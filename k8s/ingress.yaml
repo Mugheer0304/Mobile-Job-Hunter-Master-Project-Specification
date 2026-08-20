@@ -1,0 +1,59 @@
+# ALB Ingress — terminates HTTPS with an ACM certificate and routes by host:
+#   api.mjh.example   -> mjh-backend  (:4000)
+#   mjh.example       -> mjh-frontend (:80)
+#
+# Prerequisites (see k8s/README.md §6):
+#   1. AWS Load Balancer Controller installed in the cluster.
+#   2. An ACM certificate for your domain(s) in us-east-1 (or the cluster region).
+#   3. A Route 53 hosted zone for the domain.
+#
+# Replace the placeholder <ACM_CERTIFICATE_ARN> and the two hosts with your
+# own values, then: kubectl apply -f k8s/ingress.yaml
+#
+# Optional: once the Ingress serves traffic, switch backend/frontend Services
+# to type: ClusterIP to stop paying for the extra LoadBalancers.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mjh-ingress
+  namespace: mjh
+  annotations:
+    # Use the AWS Load Balancer Controller ingress class.
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    # Route directly to pod IPs (works with any Service type).
+    alb.ingress.kubernetes.io/target-type: ip
+    # Listen on both 80 and 443; 80 redirects to 443.
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    # ACM certificate ARN (replace with your own).
+    alb.ingress.kubernetes.io/certificate-arn: <ACM_CERTIFICATE_ARN>
+    # Health checks against the backend's readiness endpoint.
+    alb.ingress.kubernetes.io/healthcheck-path: /ready
+    alb.ingress.kubernetes.io/healthcheck-port: '4000'
+    # Keep the ALB secure by default: only TLS 1.2+.
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    # Friendly names for the created resources.
+    alb.ingress.kubernetes.io/load-balancer-name: mjh-alb
+spec:
+  rules:
+    - host: api.mjh.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mjh-backend
+                port:
+                  number: 4000
+    - host: mjh.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mjh-frontend
+                port:
+                  number: 80

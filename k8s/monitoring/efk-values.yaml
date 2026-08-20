@@ -1,0 +1,40 @@
+# Helm values for the EFK log stack (elastic/elasticsearch, elastic/kibana).
+# Sized to fit the free-tier MJH cluster; bump for production.
+---
+# elasticsearch (applied with: helm install elasticsearch elastic/elasticsearch -f efk-values.yaml)
+replicas: 1
+minimumMasterNodes: 1
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+volumeClaimTemplate:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+# kibana (applied with: helm install kibana elastic/kibana)
+service:
+  type: ClusterIP
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+---
+# fluent-bit (applied with: helm install fluent-bit elastic/fluent-bit)
+# Default chart config already tails pod logs and ships them as JSON to
+# Elasticsearch at elasticsearch-master.logging.svc.cluster.local:9200.
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
