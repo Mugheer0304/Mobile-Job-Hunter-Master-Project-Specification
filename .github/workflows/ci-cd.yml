@@ -58,8 +58,11 @@ permissions:
   id-token: write
 
 concurrency:
-  # One run per workflow + branch; never cancel a run that may be deploying.
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Serialize push/PR runs per branch so deploys never overlap. Manual
+  # dispatch runs get a unique group (github.run_id) — GitHub keeps only one
+  # pending run per group and cancels the rest, so without this queued manual
+  # runs would cancel each other.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || '' }}
   cancel-in-progress: false
 
 env:
