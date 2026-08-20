@@ -94,7 +94,7 @@ messaging, notifications, search, and an admin panel.
 | Auth       | JWT (15m access + rotating 7d refresh tokens), bcryptjs |
 | Testing    | Jest, ts-jest, Supertest |
 | Containers | Docker (multi-stage, non-root) |
-| CI/CD      | Jenkins (declarative pipeline) |
+| CI/CD      | Jenkins (declarative pipeline) **or** GitHub Actions (`ci-cd.yml`) |
 | Security   | SonarQube (SAST), OWASP Dependency-Check, Trivy (container scan) |
 | Deployment | AWS EKS (Kubernetes), Docker Hub registry |
 | Infra (planned) | Terraform, Route 53, ACM, AWS Load Balancer Controller, Prometheus/Grafana, EFK |
@@ -118,10 +118,13 @@ mobile-job-hunter/
 │   ├── .env.example
 │   └── package.json
 ├── database/                  # reference SQL DDL + seeders (mirror of Prisma schema)
-├── jenkins/                   # CI/CD
+├── jenkins/                   # CI/CD (option 1)
 │   ├── Jenkinsfile            # declarative pipeline
 │   ├── secrets.env            # local record of secrets (GIT-IGNORED — never commit)
 │   └── README.md              # credential → Jenkins mapping
+├── .github/workflows/         # CI/CD (option 2 — drop-in GitHub Actions alternative)
+│   ├── ci-cd.yml              # same pipeline as Jenkinsfile
+│   └── README.md              # secret/input mapping + setup
 ├── terraform/                 # IaC (VPC, RDS, EKS, Jenkins EC2)
 │   ├── main.tf / variables.tf / outputs.tf / providers.tf
 │   ├── terraform.tfvars.example
@@ -299,7 +302,27 @@ docker push 0304mugheer/mjh-frontend:latest
 
 ---
 
-## 11. CI/CD Pipeline — Jenkins (Step by Step)
+## 11. CI/CD Pipeline
+
+Two equivalent pipelines are provided — pick one:
+
+- **Option A — GitHub Actions** (recommended): `.github/workflows/ci-cd.yml`
+  is a drop-in port of the Jenkins pipeline with the same stages and gates.
+  Zero infrastructure to maintain; see [`.github/workflows/README.md`](.github/workflows/README.md).
+- **Option B — Jenkins**: the original pipeline below
+  ([`jenkins/Jenkinsfile`](jenkins/Jenkinsfile)).
+
+### Option A — GitHub Actions
+
+Trigger the full flow (build → push → deploy → smoke tests) from
+**Actions → CI/CD → Run workflow** and tick `deploy`. Push/PR runs execute the
+CI job (tests + optional quality gates) only. See
+[`.github/workflows/README.md`](.github/workflows/README.md) for the secrets
+(`DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`, `AWS_ROLE_TO_ASSUME`, `SONAR_TOKEN`,
+`SONAR_HOST_URL`) and variables (`DOCKER_HUB_USER`, `AWS_REGION`, `EKS_CLUSTER`,
+`K8S_NAMESPACE`) to configure.
+
+### Option B — Jenkins (Step by Step)
 
 The declarative pipeline lives in `jenkins/Jenkinsfile`:
 
@@ -639,7 +662,7 @@ Health: `GET /health`, `GET /ready`.
 ## 18. Roadmap
 
 1. ✅ Application code (frontend + backend + database) + Dockerfiles
-2. ✅ Jenkins pipeline (`jenkins/Jenkinsfile`) + credentials wiring
+2. ✅ CI/CD pipelines — Jenkins (`jenkins/Jenkinsfile`) and GitHub Actions (`.github/workflows/ci-cd.yml`) + credentials wiring
 3. ⬜ Provision Jenkins EC2 + install tools/plugins/credentials (follow §11)
 4. ✅ Kubernetes manifests (`k8s/`) — deployments + LoadBalancer services
 5. ✅ EKS cluster + RDS provisioning

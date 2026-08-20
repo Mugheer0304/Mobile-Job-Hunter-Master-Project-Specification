@@ -47,3 +47,6 @@ backend/prisma/*.db
 .terraform/
 *.tfvars
 *.tfvars.json
+
+# TypeScript incremental build info
+*.tsbuildinfo

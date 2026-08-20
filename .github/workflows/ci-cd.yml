@@ -1,0 +1,290 @@
+# Mobile Job Hunter — GitHub Actions CI/CD
+#
+# Direct port of jenkins/Jenkinsfile (same stages, same order, same gates):
+#
+#   Checkout → Install → Unit tests → (SonarQube) → (Dependency-Check)
+#   → Build backend image → (Trivy) → Push backend
+#   → Deploy backend (read its URL) → Build frontend (with that URL) → Push frontend
+#   → Deploy frontend (read its URL) → Smoke tests
+#
+# The frontend bakes NEXT_PUBLIC_API_URL into its bundle at build time, so the
+# backend is deployed FIRST and its LoadBalancer URL is passed to the frontend
+# build as a build-arg — exactly like the Jenkinsfile.
+#
+# Two jobs:
+#   ci              — fast feedback on every push/PR (install, tests, typecheck,
+#                     optional SonarQube + OWASP Dependency-Check)
+#   build-and-deploy — the full Jenkins-equivalent flow on push to main and
+#                     manual dispatch (build → scan → push → deploy → smoke)
+#
+# Secrets map 1:1 to the Jenkins credentials store (see .github/workflows/README.md):
+#   Jenkins                → GitHub secret / variable
+#   github-credentials     → GITHUB_TOKEN (built-in) — no secret needed
+#   docker-hub-creds       → DOCKERHUB_USERNAME + DOCKERHUB_TOKEN
+#   sonar-token            → SONAR_TOKEN (+ SONAR_HOST_URL)
+#   Jenkins IAM role       → AWS_ROLE_TO_ASSUME (OIDC) or AWS_ACCESS_KEY_ID/SECRET
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      # Jenkins pipeline parameters, exposed as dispatch inputs. Push/PR runs
+      # use the same defaults as Jenkins (everything off).
+      deploy:
+        type: boolean
+        default: false
+        description: 'Deploy to EKS and run the smoke tests'
+      run_sonar:
+        type: boolean
+        default: false
+        description: 'Run SonarQube static analysis'
+      run_dep_check:
+        type: boolean
+        default: false
+        description: 'Run OWASP Dependency-Check'
+      run_trivy:
+        type: boolean
+        default: false
+        description: 'Run Trivy container scan'
+
+# OIDC needs id-token: write for aws-actions/configure-aws-credentials.
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  # One run per workflow + branch; never cancel a run that may be deploying.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Mirror of the Jenkinsfile `environment` block. Repo variables can override
+  # the defaults (Settings → Secrets and variables → Actions → Variables).
+  DOCKER_HUB_USER: ${{ vars.DOCKER_HUB_USER || '0304mugheer' }}
+  BACKEND_IMAGE: docker.io/${{ vars.DOCKER_HUB_USER || '0304mugheer' }}/mjh-backend
+  FRONTEND_IMAGE: docker.io/${{ vars.DOCKER_HUB_USER || '0304mugheer' }}/mjh-frontend
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  EKS_CLUSTER: ${{ vars.EKS_CLUSTER || 'mjh-cluster' }}
+  K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'mjh' }}
+  SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL || 'http://localhost:9000' }}
+
+  # Jenkins parameters → inputs, with the Jenkins defaults for push/PR runs.
+  DEPLOY: ${{ inputs.deploy || 'false' }}
+  RUN_SONAR: ${{ inputs.run_sonar || 'false' }}
+  RUN_DEP_CHECK: ${{ inputs.run_dep_check || 'false' }}
+  RUN_TRIVY: ${{ inputs.run_trivy || 'false' }}
+
+jobs:
+  # ---------------------------------------------------------------- CI job
+  ci:
+    name: CI (tests + quality gates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          npm ci
+          npx prisma generate
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Unit tests (backend)
+        working-directory: backend
+        run: npm test
+
+      - name: Typecheck (backend)
+        working-directory: backend
+        run: npm run typecheck
+
+      - name: Typecheck (frontend)
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Static Code Analysis (SonarQube)
+        if: env.RUN_SONAR == 'true'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          docker run --rm \
+            -e "SONAR_HOST_URL=${SONAR_HOST_URL}" \
+            -v "$PWD:/usr/src" \
+            sonarsource/sonar-scanner-cli \
+            -Dsonar.projectKey=mobile-job-hunter \
+            -Dsonar.sources=backend/src,frontend/src \
+            -Dsonar.login="$SONAR_TOKEN"
+
+      - name: Dependency Scan (OWASP Dependency-Check)
+        if: env.RUN_DEP_CHECK == 'true'
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'mobile-job-hunter'
+          path: '.'
+          format: 'HTML'
+          out: 'dependency-check-report'
+          # Scan both apps (node_modules/.next excluded — package-lock.json
+          # files are the real CVE source). Fail on HIGH/CRITICAL (CVSS ≥ 7).
+          args: '--failOnCVSS 7 --exclude **/node_modules/** --exclude **/.next/**'
+
+      - name: Upload Dependency-Check report
+        if: always() && env.RUN_DEP_CHECK == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: dependency-check-report/
+
+  # ------------------------------------------- Build / push / deploy job
+  # Mirrors the Jenkins pipeline stages in order. Runs on push to main and
+  # manual dispatch (never on PRs — those only get the `ci` job).
+  build-and-deploy:
+    name: Build, push, deploy (Jenkins-equivalent flow)
+    runs-on: ubuntu-latest
+    needs: ci
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      # Jenkins tags images `${BUILD_NUMBER}-${SHA7}` → `${run_number}-${sha7}`.
+      - name: Compute image tag
+        run: echo "IMAGE_TAG=${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ------------------------------------------------- Build backend
+      - name: Build backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: false
+          load: true
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:latest
+            ${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }}
+
+      - name: Container Scan (Trivy)
+        if: env.RUN_TRIVY == 'true'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+
+      - name: Push backend image
+        run: |
+          docker push ${{ env.BACKEND_IMAGE }}:latest
+          docker push ${{ env.BACKEND_IMAGE }}:${{ env.IMAGE_TAG }}
+
+      # ------------------------------------------------ Deploy backend
+      - name: Configure AWS credentials (OIDC)
+        if: env.DEPLOY == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        if: env.DEPLOY == 'true'
+        uses: azure/setup-kubectl@v4
+
+      - name: Point kubectl at the cluster
+        if: env.DEPLOY == 'true'
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER }}
+
+      - name: Deploy backend and wait for LoadBalancer
+        id: deploy-backend
+        if: env.DEPLOY == 'true'
+        run: |
+          kubectl apply -f k8s/namespace.yaml -f k8s/configmap.yaml -f k8s/backend/
+          HOST=""
+          for i in $(seq 1 40); do
+            HOST=$(kubectl -n ${{ env.K8S_NAMESPACE }} get svc mjh-backend \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            [ -n "$HOST" ] && break
+            sleep 10
+          done
+          if [ -z "$HOST" ]; then
+            echo "::error::Timed out waiting for the mjh-backend LoadBalancer hostname"
+            exit 1
+          fi
+          echo "backend_url=http://${HOST}:4000" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------ Build frontend
+      # When deploying, the backend LB URL is baked into the frontend bundle
+      # (same as Jenkins). Otherwise fall back to the local dev URL.
+      - name: Resolve frontend API URL
+        id: api-url
+        run: |
+          if [ -n "${{ steps.deploy-backend.outputs.backend_url }}" ]; then
+            echo "api_url=${{ steps.deploy-backend.outputs.backend_url }}/api/v1" >> "$GITHUB_OUTPUT"
+          else
+            echo "api_url=http://localhost:4000/api/v1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: false
+          load: true
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ steps.api-url.outputs.api_url }}
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:latest
+            ${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}
+
+      - name: Push frontend image
+        run: |
+          docker push ${{ env.FRONTEND_IMAGE }}:latest
+          docker push ${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}
+
+      # ------------------------------------------------ Deploy frontend
+      - name: Deploy frontend and wait for LoadBalancer
+        id: deploy-frontend
+        if: env.DEPLOY == 'true'
+        run: |
+          kubectl apply -f k8s/frontend/
+          HOST=""
+          for i in $(seq 1 40); do
+            HOST=$(kubectl -n ${{ env.K8S_NAMESPACE }} get svc mjh-frontend \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            [ -n "$HOST" ] && break
+            sleep 10
+          done
+          if [ -z "$HOST" ]; then
+            echo "::error::Timed out waiting for the mjh-frontend LoadBalancer hostname"
+            exit 1
+          fi
+          echo "frontend_url=http://${HOST}" >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------- Smoke tests
+      - name: Smoke tests
+        if: env.DEPLOY == 'true'
+        env:
+          BACKEND_URL: ${{ steps.deploy-backend.outputs.backend_url }}
+          FRONTEND_URL: ${{ steps.deploy-frontend.outputs.frontend_url }}
+        run: |
+          curl -fsS "${BACKEND_URL}/health"
+          curl -fsS "${BACKEND_URL}/api/v1/jobs"
+          curl -fsS "${FRONTEND_URL}/jobs"
